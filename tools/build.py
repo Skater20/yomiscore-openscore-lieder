@@ -20,6 +20,14 @@ import tempfile
 import time
 
 BATCH = 40
+# Sube cuando cambia cómo se prepara cada fuente: obliga a reconvertir todo lo ya hecho.
+RECIPE = "v2"
+# Estilos de texto que MuseScore 3.6 no conoce (los pondría todos en el mismo sitio, pisándose): se traducen a los
+# suyos. El nombre de la canción va de título y la colección de subtítulo.
+STYLE_FIXES = {
+    "<style>Movement Title</style>": "<style>Title</style>",
+    "<style>Work Title</style>": "<style>Subtitle</style>",
+}
 TIMEOUT_BATCH = 900
 TIMEOUT_ONE = 180
 
@@ -64,6 +72,21 @@ def is_pdf(path):
             return f.read(5) == b"%PDF-"
     except OSError:
         return False
+
+
+def prepare(src, sid, workdir):
+    """La fuente lista para MuseScore 3.6: la original o, si usa estilos que no conoce, una copia corregida."""
+    with open(src, encoding="utf-8") as f:
+        text = f.read()
+    fixed = text
+    for old, new in STYLE_FIXES.items():
+        fixed = fixed.replace(old, new)
+    if fixed == text:
+        return src
+    out = os.path.join(workdir, f"lc{sid}.mscx")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(fixed)
+    return out
 
 
 def run_job(mscore, pairs, timeout):
@@ -117,6 +140,7 @@ def main():
                 if len(parts) == 2:
                     state[parts[0]] = parts[1]
 
+    workdir = tempfile.mkdtemp(prefix="lieder-")
     rows, todo = [], []
     for sid, s in scores.items():
         path = s.get("path", "")
@@ -126,10 +150,10 @@ def main():
         if not os.path.exists(src):
             continue
         dst = os.path.join(a.out, "scores", *path.split("/"), f"lc{sid}.pdf")
-        digest = sha(src)
+        digest = f"{RECIPE}:{sha(src)}"
         rows.append((sid, s, path, src, dst, digest))
         if state.get(sid) != digest or not is_pdf(dst):
-            todo.append((src, dst))
+            todo.append((prepare(src, sid, workdir), dst))
         if a.limit and len(rows) >= a.limit:
             break
 
@@ -146,6 +170,10 @@ def main():
         for pair in missing:  # una a una: la que tumba a MuseScore no se lleva a las demás
             run_job(a.mscore, [pair], TIMEOUT_ONE)
         print(f"  {min(i + BATCH, len(todo))}/{len(todo)} · {int(time.time() - start)} s", flush=True)
+
+    failed = [os.path.relpath(d, a.out) for _, d in todo if not is_pdf(d)]
+    if failed:
+        print(f"::warning title={len(failed)} canciones sin PDF::{' | '.join(failed[:25])[:3000]}", flush=True)
 
     cols = ["id", "path", "title", "set", "number", "composer", "born", "died", "lyricist", "language",
             "instruments", "link", "pdf"]
