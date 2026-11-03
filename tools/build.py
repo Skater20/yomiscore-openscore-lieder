@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -70,12 +71,27 @@ def run_job(mscore, pairs, timeout):
         json.dump([{"in": i, "out": o} for i, o in pairs], j)
         job = j.name
     try:
-        subprocess.run([mscore, "-j", job], timeout=timeout, check=False,
+        subprocess.run(shlex.split(mscore) + ["-j", job], timeout=timeout, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         print(f"  tanda agotada ({len(pairs)} obras)", flush=True)
     finally:
         os.unlink(job)
+
+
+def probe(mscore, src, dst):
+    """Convierte la primera a la vista: si MuseScore no funciona, lo dice (anotación pública) y se para ya."""
+    try:
+        r = subprocess.run(shlex.split(mscore) + ["-o", dst, src], timeout=TIMEOUT_ONE, capture_output=True, text=True)
+        out = (r.stdout + "\n" + r.stderr).strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        out = repr(e)
+    if is_pdf(dst):
+        print("MuseScore convierte bien", flush=True)
+        return True
+    tail = " | ".join(line.strip() for line in out.splitlines()[-12:] if line.strip())
+    print(f"::error title=MuseScore no convierte::{tail[:3000] or 'sin salida'}", flush=True)
+    return False
 
 
 def main():
@@ -120,6 +136,8 @@ def main():
     print(f"{len(rows)} canciones · {len(todo)} por convertir", flush=True)
     for _, dst in todo:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if todo and not probe(a.mscore, *todo[0]):
+        return 1
     start = time.time()
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
